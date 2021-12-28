@@ -1,0 +1,20 @@
+FOR TRAIN DATA
+Number of Documents: 24960
+Number of distinct words 47452 (Excluding stopwords)
+8717 documents have class treatment
+6193 documents have class diagnosis
+11102 documents have class prevention
+4438 documents have class mechanism
+1088 documents have class transmission
+645 documents have class epidemic forecasting
+2063 documents have class case report
+FOR TEST DATA
+Number of Documents: 6239
+Number of distinct words 26412 (Excluding stopwords)
+2207 documents have class treatment
+1546 documents have class diagnosis
+2750 documents have class prevention
+1073 documents have class mechanism
+256 documents have class transmission
+192 documents have class epidemic forecasting
+482 documents have class case report
