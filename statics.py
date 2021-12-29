@@ -24,11 +24,12 @@ def int_to_class(val: int) -> list:
 
     return ans
 
+
 def get_vocab_size(data) -> int:
     longString = ""
     for text in data:
         longString += text[0].lower() + " "
-    
+
     with open('stopwords.txt') as fp: # Load Stopwords
         stopwords = set(fp.read().splitlines())
 
@@ -53,17 +54,21 @@ def update_labels(original_data):
 
         assert original_data[i][-1]
 
+
 def get_number_of_docs_in_class(data, index:int) -> int:
     ans = 0
-    
+
     for i in range(len(data)):
         if ((data[i][-1] >> index) & 1) == 1:
             ans += 1
-    
+
     return ans
 
+
 def get_train_and_test_data():
-    train_filename = "./Datasets/BC7-LitCovid-Train.csv"
+    # train_filename = "./Datasets/BC7-LitCovid-Train.csv"
+    # test_filename = "./Datasets/BC7-LitCovid-Dev.csv"
+    train_filename = "./Datasets/small_dataset.csv"
     test_filename = "./Datasets/BC7-LitCovid-Dev.csv"
 
     train_data = csv.reader(open(train_filename, "rt"))
@@ -77,10 +82,11 @@ def get_train_and_test_data():
     update_labels(train_data)
     update_labels(test_data)
 
-    train_data = [[row[TITLE_INDEX] + ' ' + row[ABSTRACT_INDEX], row[-1]] for row in train_data]
-    test_data = [[row[TITLE_INDEX] + ' ' + row[ABSTRACT_INDEX], row[-1]] for row in test_data]
+    train_data = [[row[TITLE_INDEX] + ' ' + row[ABSTRACT_INDEX], row[-1]] for row in train_data],
+    test_data = [[row[TITLE_INDEX] + ' ' + row[ABSTRACT_INDEX], row[-1]] for row in test_data],
 
     return train_data, test_data
+
 
 def get_statics(train_data, test_data):
     print("FOR TRAIN DATA")
@@ -93,7 +99,4 @@ def get_statics(train_data, test_data):
     print("Number of distinct words", get_vocab_size(test_data))
     for i in range(len(CLASSES)):
         print("{} documents have class {}".format(get_number_of_docs_in_class(test_data, i), CLASSES[i]))
-    
 
-train_data, test_data = get_train_and_test_data()
-get_statics(train_data, test_data)
