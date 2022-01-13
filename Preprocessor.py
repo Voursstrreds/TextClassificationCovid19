@@ -1,161 +1,93 @@
 import numpy as np
 import pandas as pd
-import pprint as pp
 
 from sklearn.feature_extraction.text import CountVectorizer
+from nltk.tokenize import word_tokenize
+from pprint import pprint
 
 import csv
+import time
 
-CLASSES = [
-    'treatment',  # 0
-    'diagnosis',  # 1
-    'prevention',  # 2
-    'mechanism',  # 3
-    'transmission',  # 4
-    'epidemic forecasting',  # 5
-    'case report'  # 6
-]
-
-TITLE_INDEX = 2
-ABSTRACT_INDEX = 3
+from statics import *
 
 
-def int_to_class(val: int) -> list:
-    ans = []
+def calculate_class_and_prob(training_data):
 
-    for i in range(len(CLASSES)):
-        if ((val >> i) & 1) == 1:
-            ans.append(CLASSES[i])
+    columns = ['sent', 'class']
+    rows = []
 
-    return ans
+    new_sentence = 'what is the price of the book well '
+    new_word_list = word_tokenize(new_sentence)
 
+    training_data = pd.DataFrame(training_data[0], columns=columns)
 
-def update_labels(original_data):
-    for i in range(len(original_data)):
+    class_names = training_data['class'].unique()
 
-        labels = original_data[i][-1]
-        labels = labels.lower()
-        labels = labels.split(';')
+    class_freqs = training_data.groupby('class').count() / training_data.shape[0]
 
-        original_data[i][-1] = 0
+    docs = [row['sent'] for index, row in training_data.iterrows()]
 
-        for j in range(len(CLASSES)):
-            if CLASSES[j] in labels:
-                original_data[i][-1] = original_data[i][-1] | (1 << j)
+    vec = CountVectorizer()
+    x = vec.fit_transform(docs)
 
-        assert original_data[i][-1]
+    total_features = len(vec.get_feature_names_out())
 
+    tdms = []
+    freqs = []
+    probs = []
+    answers = []
+    newWords = []
 
-def get_train_and_test_data():
-    train_filename = "./Datasets/BC7-LitCovid-Train.csv"
-    test_filename = "./Datasets/BC7-LitCovid-Dev.csv"
+    for idx, label in enumerate(class_names):
 
-    train_data = csv.reader(open(train_filename, "rt"))
-    train_data = list(train_data)
-    train_data = train_data[1:]
+        class_docs = [row['sent'] for index, row in training_data.iterrows() if row['class'] == label]
 
-    test_data = csv.reader(open(test_filename, "rt"))
-    test_data = list(test_data)
-    test_data = test_data[1:]
+        vec_s = CountVectorizer()
+        x_s = vec_s.fit_transform(class_docs)
+        tdms.append(pd.DataFrame(x_s.toarray(), columns=vec_s.get_feature_names_out()))
 
-    update_labels(train_data)
-    update_labels(test_data)
+        word_list_s = vec_s.get_feature_names_out()
+        count_list_s = x_s.toarray().sum(axis=0)
 
-    train_data = [[row[TITLE_INDEX] + ' ' + row[ABSTRACT_INDEX], row[-1]] for row in train_data]
-    test_data = [[row[TITLE_INDEX] + ' ' + row[ABSTRACT_INDEX], row[-1]] for row in test_data]
+        freqs.append(dict(zip(word_list_s, count_list_s)))
 
-    return train_data, test_data
+        prob = []
 
+        for word, count in zip(word_list_s, count_list_s):
+            prob.append(count / len(word_list_s))
+        probs.append(dict(zip(word_list_s, prob)))
 
-trainingData, testData = get_train_and_test_data()
+        total_cnts_features_s = count_list_s.sum(axis=0)
 
-# pp.pprint(training_data)
-# pp.pprint(test_data)
+        prob_s_with_ls = []
+        for word in new_word_list:
+            if word in freqs[-1].keys():
+                count = freqs[-1][word]
+            else:
+                count = 0
+            prob_s_with_ls.append((count + 1) / (total_cnts_features_s + total_features))
+        newWords.append(dict(zip(new_word_list, prob_s_with_ls)))
 
-print(np.shape(trainingData))
+        answer = 1
+        for word in new_word_list:
+            answer = answer * newWords[-1][word]
+            # print(word, newWords[-1][word])
+        try:
+            answers.append(answer * class_freqs['sent'][idx + 1])
+        except KeyError:
+            answers.append(0)
 
-pp.pprint(trainingData[0][1])
-
-from nltk.tokenize import word_tokenize
-
-new_sentence = 'what is the price of the book'
-new_word_list = word_tokenize(new_sentence)
-
-columns = ['sent', 'class']
-rows = []
-
-rows = trainingData
-training_data = pd.DataFrame(trainingData[0], columns=columns)
-# pp.pprint(training_data)
-
-class_names = training_data['class'].unique()
-
-print("CLASS NAMES")
-pp.pprint(class_names)
-
-classFreqs = training_data.groupby('class').count() / training_data.shape[0]
-print("CLASSFREQS")
-pp.pprint(classFreqs)
-
-pp.pprint(training_data['class'])
-
-docs = [row['sent'] for index, row in training_data.iterrows()]
-
-vec = CountVectorizer()
-X = vec.fit_transform(docs)
-
-total_features = len(vec.get_feature_names())
-# pp.pprint(total_features)
+    return tdms, probs, answers
 
 
-tdms = []
-freqs = []
-probs = []
-answers = []
-newWords = []
-for idx, label in enumerate(class_names):
+def main():
+    training_data, testing_data = get_train_and_test_data()
+    tdms, probs, answers = calculate_class_and_prob(training_data)
 
-    class_docs = [row['sent'] for index, row in training_data.iterrows() if row['class'] == label]
+    pprint(probs)
 
-    vec_s = CountVectorizer()
-    X_s = vec_s.fit_transform(class_docs)
-    tdms.append(pd.DataFrame(X_s.toarray(), columns=vec_s.get_feature_names()))
 
-    word_list_s = vec_s.get_feature_names();
-    count_list_s = X_s.toarray().sum(axis=0)
-
-    freqs.append(dict(zip(word_list_s, count_list_s)))
-
-    prob = []
-
-    for word, count in zip(word_list_s, count_list_s):
-        prob.append(count / len(word_list_s))
-    probs.append(dict(zip(word_list_s, prob)))
-
-    total_cnts_features_s = count_list_s.sum(axis=0)
-
-    prob_s_with_ls = []
-    for word in new_word_list:
-        if word in freqs[-1].keys():
-            count = freqs[-1][word]
-        else:
-            count = 0
-        prob_s_with_ls.append((count + 1) / (total_cnts_features_s + total_features))
-    newWords.append(dict(zip(new_word_list, prob_s_with_ls)))
-
-    answer = 1
-    for word in new_word_list:
-        answer = answer * newWords[-1][word]
-        # print(word,newWords[-1][word])
-    answers.append(answer * classFreqs['sent'][idx + 1])
-
-# pp.pprint(tdm_s)
-
-pp.pprint(tdms)
-pp.pprint(freqs)
-pp.pprint(probs)
-pp.pprint(answers)
-pp.pprint(newWords)
+main()
 
 '''
 
@@ -215,7 +147,7 @@ newWordsS=dict(zip(new_word_list,prob_s_with_ls))
 
 
 answerStatement = 1
-  
+
 # run a loop
 for i in newWordsS:
     answerStatement = answerStatement*newWordsS[i]
@@ -232,7 +164,7 @@ for word in new_word_list:
 newWordsQ=dict(zip(new_word_list,prob_q_with_ls))
 
 answerQuestion = 1
-  
+
 # run a loop
 for i in newWordsQ:
     answerQuestion = answerQuestion*newWordsQ[i]
