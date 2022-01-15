@@ -1,10 +1,16 @@
+from ast import arg
 import math
 import string
 import operator
 import copy
 import csv
 import json
+import threading
 from multiprocessing import Pool
+import numpy as np
+import pandas as pd
+
+from FileReader import *
 
 """
 Notlar:
@@ -12,10 +18,6 @@ title,abstract, label string listesi
 
 """
 
-DOCUMENT_LIST_TRAIN = []
-DOCUMENT_LIST_TEST = []
-CLASSIFIER_LIST_TRAIN = []
-CLASSIFIER_LIST_TEST = []
 VOCABULARY = set()
 IS_LABEL_INT = False
 
@@ -37,73 +39,97 @@ PROCESS_INDEXES = [
 ]
 PROCESS_FIELDS = set(['title', 'abstract'])
 
-class Classifier:
-    def __init__(self, label: str):
-        self.label = label
-        self.mega_doc = {}
-        self.mega_keywords = {}
-        self.doc_ids = []
+lock = 0
 
-    def merge_docs(self, doc_id: int, document_dict: dict):
-        self.mega_doc[doc_id] = document_dict
-    
-    def merge_keywords(self):
-        assert 0
-        pass
 
-class Document:
-    def __init__(self, input:list):
-        self.pmid: int = input[0]
-        self.journal: str = input[1]
-        self.title: list = input[2]
-        self.abstract: list = input[3]
-        self.keywords: list = input[4]
-        self.pub_type: list = input[5]
-        self.authors: list = input[6]
-        self.doi: str = input[7]
-        self.label: list = input[8]
-    """
-    def __init__(self, pmid: int, journal: str, title: list, abstract: list, keywords: list, pub_type: list, authors: list, doi: str, label: list):
-        self.pmid = pmid
-        self.journal = journal
-        self.title = title
-        self.abstract = abstract
-        self.keywords = keywords
-        self.pub_type = pub_type
-        self.authors = authors
-        self.doi = doi
-        self.label = label
-    """
-    def get_bag_of_words(self):
-        ret = {}
-        words = self.title + self.abstract
+class MultinomialNB:
+    def __init__(self, documents):
+        self.documents = documents
+        self.total_word_count_per_class = [0] * TOTAL_CLASS_NUM
 
-        for word in words:
-            if word in ret.keys():
-                ret[word] = ret[word] + 1
-            else:
-                ret[word] = 1
-        
-        return ret
+    def process_data(self):
+        vocab = set()
+        word_as_string_count_per_class = []
 
-    def doc_sparser(self):
-        pass
+        for i in range(TOTAL_CLASS_NUM):
+            word_as_string_count_per_class.append({})
 
-    def this_to_dict(self):
-        return self.__dict__
+        for document in self.documents:
+            words = document.title + document.abstract
+            for _class in document.label:
+                index = CLASSES.index(_class)
+                self.total_word_count_per_class[index] += len(words)
+
+                for word in words:
+                    if word not in word_as_string_count_per_class[index].keys():
+                        word_as_string_count_per_class[index][word] = 1
+                    else:
+                        word_as_string_count_per_class[index][word] = word_as_string_count_per_class[index][word] + 1
+
+                for word in words:
+                    vocab.add(word)
+
+        self.vocab_list = list(vocab)
+        self.vocab_size = len(self.vocab_list)
+        self.word_index = {}
+
+        for i in range(len(self.vocab_list)):
+            word = self.vocab_list[i]
+            self.word_index[word] = i
+
+        self.word_count_per_class = []
+
+        for i in range(TOTAL_CLASS_NUM):
+            class_dict = word_as_string_count_per_class[i]
+            self.word_count_per_class.append([0] * self.vocab_size)
+
+            for key, value in class_dict.items():
+                self.word_count_per_class[i][self.word_index[key]] += value
+
+    def get_class_counts(self):
+        counts = [0] * TOTAL_CLASS_NUM
+
+        for document in self.documents:
+            for _class in document.label:
+                index = CLASSES.index(_class)
+                counts[index] += 1
+
+        return counts
+
+    def get_prob_for_each_class(self, class_counts):
+        total_class_count = sum(class_counts)
+        class_probs = [0] * TOTAL_CLASS_NUM
+
+        for i in range(TOTAL_CLASS_NUM):
+            class_probs[i] = math.log(class_counts[i] / float(total_class_count))
+
+        return class_probs
+
+    def calculate_prob_word_per_class(self):
+        self.prob_word_per_class = []
+
+        for i in range(TOTAL_CLASS_NUM):
+            word_counts = self.word_count_per_class[i]
+            self.prob_word_per_class.append([0] * self.vocab_size)
+            for j in range(len(word_counts)):
+                self.prob_word_per_class[i][j] += math.log(
+                    ((word_counts[j] + 1.) / (self.total_word_count_per_class[i] + self.vocab_size)))
+
+                # self.prob_word_per_class[i][j] += math.log(((word_counts[j] + 1.) / (self.total_word_count_per_class[i] + self.vocab_size))*self.vocab_size/10)
+
+        return self.prob_word_per_class
+
+    def train_data(self):
+        self.process_data()
+        class_counts = self.get_class_counts()
+        class_probs = self.get_prob_for_each_class(class_counts)
+        conditional_probs = self.calculate_prob_word_per_class()
+
+        return self.word_index, class_probs, conditional_probs
 
 
 with open('stopwords.txt') as fp: # Load Stopwords
     STOPWORDS = set(fp.read().splitlines())
-
-def encode_label(labels:str) -> int:
-    ret = 0
-    
-    for j in range(len(CLASSES)):
-        if CLASSES[j] in labels:
-            ret = ret | (1 << j)
-
-    return ret
 
 
 def decode_label(val: int) -> list:
@@ -115,96 +141,6 @@ def decode_label(val: int) -> list:
 
     return ans
 
-
-def update_labels(original_data, is_int: bool):
-    for i in range(len(original_data)):
-        labels = original_data[i][-1]
-        labels = labels.lower()
-        labels = labels.split(';')
-
-        original_data[i][-1] = encode_label(labels) if is_int else labels
-
-        assert original_data[i][-1]
-
-
-def create_dump_files(variable):
-    try:
-        save = variable.to_json()
-    except:
-        save = variable
-    
-    with open(f'./dump_files/{variable}', 'w') as fp:
-        json.dump(save, fp)
-
-
-def read_csv(file_name:str) -> list:
-    data = csv.reader(open(file_name, "rt"))
-
-    return list(data)[1:]
-
-
-def normalize_data(data: list, labels_int: bool) -> list:
-    for data_index in PROCESS_INDEXES:
-        for i in range(len(data)):
-            data[i][data_index] = get_words(data[i][data_index])
-
-    update_labels(data, labels_int)
-
-    return data
-
-
-def get_train_and_test_data_as_list() -> tuple:
-    train_filename = "./Datasets/BC7-LitCovid-Train.csv"
-    test_filename = "./Datasets/BC7-LitCovid-Dev.csv"
-
-    train_data = read_csv(train_filename)
-    train_data = normalize_data(train_data, IS_LABEL_INT)
-
-    test_data = read_csv(test_filename)
-    test_data = normalize_data(test_data, IS_LABEL_INT)
-
-    train_data = [Document(row) for row in train_data]
-    test_data = [Document(row) for row in test_data]
-
-    return train_data, test_data
-
-def get_train_and_test_data_as_dict() -> tuple:
-    train_filename = "./Datasets/BC7-LitCovid-Train.csv"
-    test_filename = "./Datasets/BC7-LitCovid-Dev.csv"
-
-    train_data = read_csv(train_filename)
-    train_data = normalize_data(train_data, IS_LABEL_INT)
-
-    test_data = read_csv(test_filename)
-    test_data = normalize_data(test_data, IS_LABEL_INT)
-
-    train_data_dict = {}
-    test_data_dict = {}
-
-    for i in range(len(train_data)):
-        train_data_dict[i] = train_data[i]
-
-    for i in range(len(test_data)):
-        test_data_dict[i] = test_data[i]
-
-    return train_data_dict, test_data_dict
-
-
-def remove_stopwords(words: list) -> list:
-    ret = []
-    
-    for word in words:
-        if word not in STOPWORDS:
-            ret.append(word)
-
-    return ret
-
-def get_words(input: str, is_remove_stopwords: bool=True) -> list:
-    input_words = input.translate(str.maketrans('', '', string.punctuation)).lower()
-    if is_remove_stopwords:
-        input_words = remove_stopwords(input_words.split())
-    
-    return input_words
 
 def dot_product(a: dict, b: dict) -> float:
     ret = 0
@@ -221,6 +157,7 @@ def dot_product(a: dict, b: dict) -> float:
 
     return ret
 
+
 def get_class_counts(document: Document) -> list:
     ret = [0] * TOTAL_CLASS_NUM
     
@@ -229,6 +166,7 @@ def get_class_counts(document: Document) -> list:
         ret[index] += 1
     
     return ret
+
 
 def normalize_vector(a: dict) -> dict:
     ret = {}
@@ -245,6 +183,7 @@ def normalize_vector(a: dict) -> dict:
 
     return ret
 
+
 def get_vector_length(a: dict) -> float:
     length = 0
     
@@ -255,6 +194,7 @@ def get_vector_length(a: dict) -> float:
 
     return length
 
+
 def add_two_lists(a: list, b: list) -> list:
     assert len(a) == len(b)
     ret = []
@@ -264,100 +204,27 @@ def add_two_lists(a: list, b: list) -> list:
     
     return ret
 
-class MultinomialNB:
-    def __init__(self, documents):
-        self.documents = documents
-        self.total_word_count_per_class = [0] * TOTAL_CLASS_NUM
 
-    def process_data(self):
-        vocab = set()
-        word_as_string_count_per_class = []
-        
-        for i in range(TOTAL_CLASS_NUM):
-            word_as_string_count_per_class.append({})
+def expo(array,base):
+    return np.exp(np.log(10)*np.array(array)).tolist()
 
-        for document in self.documents:
-            words = document.title + document.abstract
-            for _class in document.label:
-                index = CLASSES.index(_class)
-                self.total_word_count_per_class[index] += len(words)
-                
-                for word in words:
-                    if word not in word_as_string_count_per_class[index].keys():
-                        word_as_string_count_per_class[index][word] = 1
-                    else:
-                        word_as_string_count_per_class[index][word] = word_as_string_count_per_class[index][word] + 1
-                    
-                
-                for word in words:
-                    vocab.add(word)
-             
-        self.vocab_list = list(vocab)
-        self.vocab_size = len(self.vocab_list)
-        self.word_index = {}
-        
-        for i in range(len(self.vocab_list)):
-            word = self.vocab_list[i]
-            self.word_index[word] = i
-        
-        self.word_count_per_class = []
 
-        for i in range(TOTAL_CLASS_NUM):
-            class_dict = word_as_string_count_per_class[i]
-            self.word_count_per_class.append([0] * self.vocab_size)
-            
-            for key, value in class_dict.items():
-                self.word_count_per_class[i][self.word_index[key]] += value
 
-    def get_class_counts(self):
-        counts = [0] * TOTAL_CLASS_NUM
-        
-        for document in self.documents:
-            for _class in document.label:
-                index = CLASSES.index(_class)
-                counts[index] += 1
-
-        return counts
-
-    def get_prob_for_each_class(self, class_counts):
-        total_class_count = sum(class_counts)
-        class_probs = [0] * TOTAL_CLASS_NUM
-        
-        for i in range(TOTAL_CLASS_NUM):
-            class_probs[i] = math.log(class_counts[i] / float(total_class_count))
-        
-        return class_probs
-
-    def calculate_prob_word_per_class(self):
-        self.prob_word_per_class = []
-
-        for i in range(TOTAL_CLASS_NUM): 
-            word_counts = self.word_count_per_class[i]
-            self.prob_word_per_class.append([0] * self.vocab_size)
-            for j in range(len(word_counts)):
-                self.prob_word_per_class[i][j] += math.log((word_counts[j] + 1.) / (self.total_word_count_per_class[i] + self.vocab_size))
-
-        return self.prob_word_per_class
-
-    def train_data(self):
-        self.process_data()
-        class_counts = self.get_class_counts()
-        class_probs = self.get_prob_for_each_class(class_counts)
-        conditional_probs = self.calculate_prob_word_per_class()
-
-        return self.word_index, class_probs, conditional_probs
 
 
 def apply_mnb(train_data, test_data, label_int: bool):
     mnb = MultinomialNB(train_data)
     word_index, class_probs, conditional_probs = mnb.train_data()
     
-    tp = [0] * TOTAL_CLASS_NUM
-    tn = [0] * TOTAL_CLASS_NUM
-    fp = [0] * TOTAL_CLASS_NUM
-    fn = [0] * TOTAL_CLASS_NUM
+    tp = [0.00000007] * TOTAL_CLASS_NUM
+    tn = [0.00000007] * TOTAL_CLASS_NUM
+    fp = [0.00000007] * TOTAL_CLASS_NUM
+    fn = [0.00000007] * TOTAL_CLASS_NUM
 
-    for document in test_data:
+    goldStandart=[]
+    predictions=[]
+
+    for idx, document in enumerate(test_data):
         scores = copy.deepcopy(class_probs)
 
         words = document.title + document.abstract
@@ -370,11 +237,31 @@ def apply_mnb(train_data, test_data, label_int: bool):
             raise Exception("NOT IMPLEMENTED")
 
         best = scores.index(max(scores)) 
+        #scores=expo(scores,10)
+
         topic_indexes = []
         
         for _class in document.label:
             index = CLASSES.index(_class)
             topic_indexes.append(index)
+
+        topics_dump=[idx]
+        
+        scores=expo(scores,10)
+        total=np.array(sum(scores))
+        scores=np.array(scores)
+        #scores=scores/total 
+        scores=scores.tolist()
+        scores.insert(0,idx)
+        #print(scores)
+        predictions.append(scores)
+
+        for i in range(TOTAL_CLASS_NUM):
+            if i in topic_indexes:
+                topics_dump.append(1)
+            else:
+                topics_dump.append(0)
+        goldStandart.append(topics_dump)
         
         for i in range(TOTAL_CLASS_NUM):
             if best == i and i in topic_indexes:
@@ -401,6 +288,20 @@ def apply_mnb(train_data, test_data, label_int: bool):
         recall_macro_avg += tp[i] / (tp[i] + fn[i])
     recall_macro_avg /= TOTAL_CLASS_NUM
 
+    df = pd.DataFrame(goldStandart)
+    df.columns =['0', '1', '2', '3','4', '5', '6', '7']
+    df.rename({'0': 'PMID', '1': 'Treatment','2': 'Diagnosis','3': 'Prevention','4': 'Mechanism','5': 'Transmission','6': 'Epidemic Forecasting','7': 'Case Report'},  axis=1, inplace=True)
+    
+    df.to_csv('goldStandart.csv', index=False)
+
+    df = pd.DataFrame(predictions)
+    #print(predictions)
+    df.columns =['0', '1', '2', '3','4', '5', '6', '7']
+    df.rename({'0': 'PMID', '1': 'Treatment','2': 'Diagnosis','3': 'Prevention','4': 'Mechanism','5': 'Transmission','6': 'Epidemic Forecasting','7': 'Case Report'},  axis=1, inplace=True)
+    
+    df.to_csv('predictions.csv', index=False)
+    #print(df.columns)
+    #print(len(test_data))
     print("MNB Result")
     print("PRECISION MICRO:", precision_micro_avg)
     print("PRECISION MACRO:", precision_macro_avg)
@@ -415,7 +316,12 @@ def apply_mnb(train_data, test_data, label_int: bool):
 
     print("FSCORE AVERAGE:", (micro_fscore_avg + macro_fscore_avg) / 2.)
 
+    print("ClassName ---  TruePositive ---  TrueNegative ---  FalsePositive ---  FalseNegative")
+    for i in range(TOTAL_CLASS_NUM):
+        print(CLASSES[i],"          ",tp[i],"           ", tn[i],"        ", fp[i],"             ", fn[i] )
+
     del mnb
+
 
 class KNN:
     def __init__(self, documents):
@@ -492,7 +398,7 @@ def apply_knn(train_data, test_data, k_list, is_tuning: bool, label_int: bool = 
     knn = KNN(train_data)
     word_index, tf_idf, document_freq = knn.train_data()
     document_count_train = len(train_data)
-    
+    test_data= test_data[:20]
     tp = []
     tn = []
     fp = []
@@ -502,12 +408,12 @@ def apply_knn(train_data, test_data, k_list, is_tuning: bool, label_int: bool = 
         raise Exception("NOT IMPLEMENTED")
 
     for i in range(k_count):
-        tp.append([0] * TOTAL_CLASS_NUM)
-        tn.append([0] * TOTAL_CLASS_NUM)
-        fp.append([0] * TOTAL_CLASS_NUM)
-        fn.append([0] * TOTAL_CLASS_NUM)
+        tp.append([0.0000000007] * TOTAL_CLASS_NUM)
+        tn.append([0.0000000007] * TOTAL_CLASS_NUM)
+        fp.append([0.0000000007] * TOTAL_CLASS_NUM)
+        fn.append([0.0000000007] * TOTAL_CLASS_NUM)
 
-    for document in test_data:
+    for idx,document in enumerate(test_data):
         scores = {}
         vector = {}
 
@@ -527,16 +433,30 @@ def apply_knn(train_data, test_data, k_list, is_tuning: bool, label_int: bool = 
         vector = normalize_vector(vector)
 
         process_list = []
+
         for i in range(document_count_train):
             process_list.append((tf_idf[i], vector))
 
-        with Pool(4) as p:
-            ans = p.starmap(dot_product, process_list)
-            for i in range(document_count_train):
-                scores[i] = ans[i] #dot_product(tf_idf[i], vector)
+        global lock
+        lock = 0
+
+        def calculate_dot_product(begin, end):
+            global lock
+            for i in range(begin, end):
+                scores[i] = dot_product(tf_idf[i],vector)
+            lock = lock + 1
         
-        # for i in range(document_count_train):
-        #     scores[i] = dot_product(tf_idf[i], vector)
+        num_of_threads = 12
+        thread_pool = []
+        for i in range(num_of_threads):
+            begin = i * document_count_train // num_of_threads
+            end = begin + document_count_train // num_of_threads-1
+            if i == num_of_threads-1:
+                end = document_count_train-1
+            thread_pool.append(threading.Thread(target=calculate_dot_product, args=(begin, end,)))
+            thread_pool[i].start()
+        while lock < 12:
+            pass
 
         sorted_scores = dict(
             sorted(scores.items(),
@@ -546,6 +466,8 @@ def apply_knn(train_data, test_data, k_list, is_tuning: bool, label_int: bool = 
 
         sum_topic_count = [0] * TOTAL_CLASS_NUM
 
+        with open('readme.txt', 'w') as f:
+            f.write(str(sorted_scores))
         count = 0
         pointer = 0
         
@@ -656,18 +578,6 @@ def tune_k(train_data: list) -> int:
         
     return overall_best_k
 
-def main(args=None):
-    train_data, test_data = get_train_and_test_data_as_list()
-
-    #apply_mnb(train_data, test_data, IS_LABEL_INT)
-    
-    best_k = tune_k(train_data)
-    print("BEST K:", best_k)
-    apply_knn(train_data, test_data, [best_k], False)
-
-
-if __name__ == '__main__':
-    main()
 
 """
 sadece title
